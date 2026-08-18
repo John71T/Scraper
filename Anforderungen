@@ -1,0 +1,430 @@
+# Lead-Management-System
+
+## 1. Ziel des Projekts
+
+Das System soll dabei helfen, unsere Leads zentral zu verwalten und jederzeit zu sehen:
+
+* Welche Leads haben wir?
+* In welchem Status befindet sich ein Lead?
+* Wer aus unserem Team kümmert sich darum?
+* Wann hatten wir zuletzt Kontakt?
+* Wann müssen wir uns wieder melden?
+* Was wurde mit dem Kunden besprochen?
+
+Das System soll **bewusst einfach und übersichtlich bleiben**. Wir wollen ein funktionierendes MVP bauen und später bei Bedarf weitere Funktionen ergänzen.
+
+---
+
+# 2. MVP – Funktionen, die zuerst benötigt werden
+
+## 2.1 Leads verwalten
+
+Jeder Lead soll folgende Informationen besitzen:
+
+* ID
+* Unternehmen
+* Ansprechpartner
+* E-Mail
+* Telefonnummer
+* Website
+* Branche
+* Lead-Quelle
+* Status
+* Verantwortlicher Mitarbeiter
+* Priorität
+* Notizen
+* Datum des Erstkontakts
+* Datum des letzten Kontakts
+* Nächster Follow-up-Termin
+* Erstellungsdatum
+
+---
+
+# 3. Lead-Status
+
+
+NEW
+↓
+CONTACTED
+↓
+REPLIED
+↓
+QUALIFIED
+↓
+PROPOSAL
+↓
+WON / LOST
+```
+
+### Bedeutung
+
+**NEW**
+Lead wurde neu hinzugefügt und noch nicht kontaktiert.
+
+**CONTACTED**
+Erster Kontakt wurde hergestellt bzw. versucht.
+
+**REPLIED**
+Der Lead hat geantwortet.
+
+**QUALIFIED**
+Der Lead ist grundsätzlich interessant und passt zu unserem Angebot.
+
+**PROPOSAL**
+Dem Lead wurde ein Angebot bzw. eine konkrete Lösung vorgestellt.
+
+**WON**
+Lead wurde zum Kunden.
+
+**LOST**
+Lead ist nicht mehr relevant bzw. wurde verloren.
+
+---
+
+# 4. Prioritäten
+
+Jeder Lead sollte eine Priorität bekommen:
+
+LOW
+MEDIUM
+HIGH
+
+---
+
+# 5. Lead-Übersicht
+
+Die wichtigste Ansicht soll eine übersichtliche Tabelle sein.
+
+Beispiel:
+
+Unternehmen | Kontakt | Status | Verantwortlich | Follow-up | Priorität
+-----------------------------------------------------------------------
+Firma A     | Max      | NEW    | Maurice        | 20.08.    | HIGH
+Firma B     | Jonas    | REPLIED| John           | 19.08.    | MEDIUM
+Firma C     | Lisa     | WON    | Maxi           | -         | LOW
+```
+
+Die Übersicht sollte folgende Funktionen haben:
+
+* Leads suchen
+* Leads filtern
+* Leads sortieren
+* Lead öffnen
+* Lead bearbeiten
+* Lead löschen
+* Status direkt ändern
+
+---
+
+# 6. Lead-Detailseite
+
+Wenn man einen Lead öffnet, sollen alle Informationen an einem Ort sichtbar sein.
+
+Beispiel:
+
+Muster GmbH
+
+Ansprechpartner:
+Max Mustermann
+
+E-Mail:
+max@mustergmbh.de
+
+Telefon:
++49 ...
+
+Website:
+www.mustergmbh.de
+
+Status:
+QUALIFIED
+
+Priorität:
+HIGH
+
+Verantwortlich:
+John
+
+--------------------------------
+
+NOTIZEN
+
+20.08.2026
+Telefonat geführt.
+Interesse an neuer Website.
+
+--------------------------------
+
+FOLLOW-UP
+
+Nächster Kontakt:
+25.08.2026
+
+Hier sollen Informationen bearbeitet und neue Notizen hinzugefügt werden können.
+
+---
+
+# 7. Follow-ups
+
+Ein wichtiger Bestandteil des Systems sind Follow-ups.
+
+Für jeden Lead soll festgelegt werden können:
+
+* Wann soll der nächste Kontakt stattfinden?
+* Wer ist dafür verantwortlich?
+* Was soll beim nächsten Kontakt gemacht werden?
+
+Das Dashboard soll anzeigen, welche Follow-ups heute bzw. bald anstehen.
+
+Beispiel:
+
+FOLLOW-UPS HEUTE
+
+Muster GmbH      → John
+Beispiel GmbH    → Maurice
+Test GmbH        → Mxi
+
+
+---
+
+# 8. Dashboard
+
+Nach dem Login soll eine einfache Übersicht erscheinen.
+
+Beispiel:
+
+-----------------------------------------
+          LEAD MANAGEMENT
+-----------------------------------------
+
+Leads gesamt          127
+Neue Leads             23
+Follow-ups heute        8
+Angebote                5
+Gewonnen                3
+
+-----------------------------------------
+PIPELINE
+-----------------------------------------
+
+NEW          23
+CONTACTED    41
+REPLIED      18
+QUALIFIED    16
+PROPOSAL      9
+WON           8
+LOST          12
+
+
+Das Dashboard soll keine unnötigen Informationen enthalten.
+
+Der Fokus liegt auf:
+
+**Leads → Status → Follow-ups → Verantwortlichkeit**
+
+---
+
+# 9. Team-Mitglieder
+
+Da wir das System gemeinsam nutzen, brauchen wir ein einfaches Benutzer-System.
+
+Ein Benutzer besteht zunächst aus:
+
+* ID
+* Name
+* E-Mail
+* Passwort
+* Rolle
+
+Rollen:
+
+
+ADMIN
+MEMBER
+
+
+### ADMIN
+
+Kann beispielsweise:
+
+* Benutzer verwalten
+* Leads verwalten
+* Leads löschen
+* Systemeinstellungen verwalten
+
+### MEMBER
+
+Kann:
+
+* Leads ansehen
+* Leads bearbeiten
+* Notizen hinzufügen
+* Follow-ups bearbeiten
+* eigene Leads verwalten
+
+---
+
+# 10. Datenbank
+
+Die Datenbank sollte zunächst möglichst einfach gehalten werden.
+
+Voraussichtlich benötigen wir mindestens:
+
+
+Users
+Leads
+Notes
+
+
+Optional später:
+
+Activities
+FollowUps
+Companies
+
+
+Für das MVP sollte die Datenbank nicht unnötig kompliziert aufgebaut werden.
+
+---
+
+# 11. Prioritäten der Entwicklung
+
+## MUST HAVE – Version 1
+
+Diese Funktionen müssen zuerst funktionieren:
+
+* [ ] Projektgrundstruktur
+* [ ] Datenbank
+* [ ] Login
+* [ ] Benutzer
+* [ ] Lead erstellen
+* [ ] Lead anzeigen
+* [ ] Lead bearbeiten
+* [ ] Lead löschen
+* [ ] Lead-Liste
+* [ ] Lead-Suche
+* [ ] Lead-Filter
+* [ ] Lead-Status
+* [ ] Verantwortlichen zuweisen
+* [ ] Priorität
+* [ ] Notizen
+* [ ] Follow-up-Datum
+* [ ] Dashboard
+
+---
+
+# 12. SHOULD HAVE – nach dem MVP
+
+Wenn die erste Version funktioniert, kann man erweitern:
+
+* [ ] CSV-Import
+* [ ] CSV-Export
+* [ ] Erinnerungen
+* [ ] Aktivitätsverlauf
+* [ ] bessere Statistiken
+* [ ] Pipeline-/Kanban-Ansicht
+* [ ] Filter nach Lead-Quelle
+* [ ] Filter nach Branche
+* [ ] Filter nach Verantwortlichem
+
+---
+
+# 13. SPÄTER – mögliche Erweiterungen
+
+Diese Funktionen sind zunächst nicht notwendig.
+
+Sie können später hinzukommen:
+
+* [ ] automatische E-Mails
+* [ ] E-Mail-Integration
+* [ ] WhatsApp-Integration
+* [ ] automatische Lead-Erfassung
+* [ ] Google-Maps-Lead-Import
+* [ ] KI-Lead-Bewertung
+* [ ] automatische Follow-up-Erinnerungen
+* [ ] automatische E-Mail-Follow-ups
+* [ ] Lead-Scoring
+* [ ] CRM-Automatisierungen
+
+---
+
+# 14. GitHub-Projektstruktur
+
+Das Repository könnte zunächst so aussehen:
+
+```text
+lead-management/
+│
+├── README.md
+├── requirements.md
+├── .gitignore
+│
+├── backend/
+│   └── ...
+│
+├── frontend/
+│   └── ...
+│
+└── docs/
+    └── ...
+```
+
+`README.md` enthält eine kurze Erklärung des Projekts.
+
+`requirements.md` enthält die Anforderungen und den aktuellen Entwicklungsstand.
+
+`backend/` enthält die Server- und API-Logik.
+
+`frontend/` enthält die Benutzeroberfläche.
+
+`docs/` enthält spätere technische Dokumentation.
+
+---
+
+# 15. GitHub Issues
+
+Die Entwicklung sollte in einzelne Aufgaben aufgeteilt werden.
+
+Beispielsweise:
+
+```text
+#001 Projektgrundstruktur
+#002 Datenbank aufsetzen
+#003 User-System
+#004 Login
+#005 Lead-Datenmodell
+#006 Lead erstellen
+#007 Lead bearbeiten
+#008 Lead löschen
+#009 Lead-Liste
+#010 Lead-Suche
+#011 Lead-Filter
+#012 Lead-Status
+#013 Verantwortlichen zuweisen
+#014 Prioritäten
+#015 Notizen
+#016 Follow-ups
+#017 Dashboard
+#018 CSV-Import
+#019 CSV-Export
+
+
+So kann jedes Teammitglied einzelne Aufgaben übernehmen.
+
+---
+
+# 16. Grundprinzip
+
+Das wichtigste Ziel für die erste Version:
+
+> **Ein einfacher Ort, an dem wir jeden Lead verwalten und jederzeit wissen, was als Nächstes zu tun ist.**
+
+Wir sollten nicht direkt versuchen, ein riesiges CRM-System zu bauen.
+
+Erst:
+
+**Lead erfassen → Lead bearbeiten → Kontakt dokumentieren → Follow-up setzen → Status aktualisieren → Kunde gewinnen**
+
+Wenn dieser Ablauf zuverlässig funktioniert, wird das System Schritt für Schritt erweitert.
+
+
