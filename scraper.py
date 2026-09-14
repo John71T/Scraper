@@ -1,4 +1,5 @@
 import csv
+import os
 import re
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
@@ -20,6 +21,11 @@ COUNTRY = "Deutschland"
 MAX_LEADS = 10
 
 OUTPUT_FILE = "leads_clean.csv"
+
+# Dedup / Scroll-Einstellungen
+MAX_SCROLL_ATTEMPTS = 40      # Sicherheitslimit, damit die Suche nicht endlos scrollt
+SCROLL_WAIT_MS = 2000         # Wartezeit nach jedem Scroll, bis neue Ergebnisse nachladen
+STAGNANT_ROUNDS_LIMIT = 3     # Nach so vielen Scrolls ohne neue Treffer gilt die Liste als am Ende
 
 
 # ============================================================
@@ -56,6 +62,57 @@ def safe_attribute(locator, attribute):
         pass
 
     return ""
+
+
+# ============================================================
+# DEDUP GEGEN FRUEHERE LAEUFE
+# ============================================================
+
+def normalize_key(name, address):
+    combined = f"{name}{address}".lower()
+    combined = re.sub(r"\W+", "", combined)
+    return combined
+
+
+def absolutize_maps_url(href):
+    if not href:
+        return ""
+
+    if href.startswith("/"):
+        return "https://www.google.com" + href
+
+    return href
+
+
+def load_known_leads(filepath):
+    known_urls = set()
+    known_keys = set()
+
+    if not os.path.exists(filepath):
+        return known_urls, known_keys
+
+    try:
+        with open(filepath, "r", newline="", encoding="utf-8") as file:
+            reader = csv.DictReader(file)
+
+            for row in reader:
+                url = (row.get("maps_url") or "").strip()
+
+                if url:
+                    known_urls.add(url)
+
+                key = normalize_key(
+                    row.get("company_name") or "",
+                    row.get("address") or ""
+                )
+
+                if key:
+                    known_keys.add(key)
+
+    except Exception as error:
+        print(f"WARNUNG: Konnte {filepath} nicht fuer Dedup-Abgleich lesen: {error}")
+
+    return known_urls, known_keys
 
 
 # ============================================================
@@ -884,6 +941,12 @@ def extract_lead(
 
 with sync_playwright() as p:
 
+    print("Lade bereits bekannte Leads fuer Dedup-Abgleich...")
+
+    known_urls, known_keys = load_known_leads(OUTPUT_FILE)
+
+    print(f"{len(known_urls)} bereits bekannte Leads gefunden (werden uebersprungen).")
+
     browser = p.chromium.launch(
         headless=False
     )
@@ -961,56 +1024,95 @@ with sync_playwright() as p:
     # FIRMEN + MAPS URLS SAMMELN
     # ========================================================
 
-    links = page.locator(
-        'a[href*="/maps/place/"]'
-    )
+    print()
+    print("Suche nach Firmen (scrollt bei Bedarf, ueberspringt bereits bekannte Leads)...")
 
     companies = []
 
     seen_urls = set()
 
-    for i in range(
-        links.count()
-    ):
+    scroll_attempts = 0
+    stagnant_rounds = 0
+    last_link_count = 0
 
-        try:
+    while len(companies) < MAX_LEADS and scroll_attempts <= MAX_SCROLL_ATTEMPTS:
 
-            link = links.nth(
-                i
-            )
+        links = page.locator(
+            'a[href*="/maps/place/"]'
+        )
 
-            name = clean_text(
-                link.inner_text()
-            )
+        link_count = links.count()
 
-            href = link.get_attribute(
-                "href"
-            )
+        for i in range(link_count):
 
-            if not name or not href:
+            try:
+
+                link = links.nth(i)
+
+                name = clean_text(
+                    link.inner_text()
+                )
+
+                href = link.get_attribute(
+                    "href"
+                )
+
+                if not name or not href:
+                    continue
+
+                href = absolutize_maps_url(href)
+
+                if href in seen_urls:
+                    continue
+
+                seen_urls.add(href)
+
+                if href in known_urls:
+                    continue
+
+                companies.append({
+                    "name": name,
+                    "url": href
+                })
+
+                if len(companies) >= MAX_LEADS:
+                    break
+
+            except Exception:
                 continue
 
-            if href in seen_urls:
-                continue
+        if len(companies) >= MAX_LEADS:
+            break
 
-            seen_urls.add(
-                href
-            )
+        if link_count == last_link_count:
+            stagnant_rounds += 1
 
-            companies.append({
-                "name": name,
-                "url": href
-            })
-
-            if len(companies) >= MAX_LEADS:
+            if stagnant_rounds >= STAGNANT_ROUNDS_LIMIT:
+                print("Keine neuen Ergebnisse mehr beim Scrollen - Ende der Liste erreicht.")
                 break
 
+        else:
+            stagnant_rounds = 0
+
+        last_link_count = link_count
+
+        feed = page.locator('div[role="feed"]')
+
+        try:
+            if feed.count() > 0:
+                feed.first.evaluate("el => el.scrollBy(0, el.scrollHeight)")
+            else:
+                page.mouse.wheel(0, 2000)
         except Exception:
-            continue
+            page.mouse.wheel(0, 2000)
+
+        page.wait_for_timeout(SCROLL_WAIT_MS)
+
+        scroll_attempts += 1
 
     print()
     print(
-        f"{len(companies)} Firmen gefunden:"
+        f"{len(companies)} neue Firmen gefunden (bereits bekannte uebersprungen):"
     )
 
     for index, company in enumerate(
@@ -1124,9 +1226,35 @@ with sync_playwright() as p:
         "maps_url",
     ]
 
+    seen_keys_this_run = set()
+    unique_leads = []
+
+    for lead in leads:
+
+        key = normalize_key(
+            lead["company_name"],
+            lead["address"]
+        )
+
+        if key and (key in known_keys or key in seen_keys_this_run):
+            print(f"Ueberspringe Duplikat (Name+Adresse bereits bekannt): {lead['company_name']}")
+            continue
+
+        if key:
+            seen_keys_this_run.add(key)
+
+        unique_leads.append(lead)
+
+    leads = unique_leads
+
+    file_exists = (
+        os.path.exists(OUTPUT_FILE)
+        and os.path.getsize(OUTPUT_FILE) > 0
+    )
+
     with open(
         OUTPUT_FILE,
-        "w",
+        "a",
         newline="",
         encoding="utf-8"
     ) as file:
@@ -1136,7 +1264,8 @@ with sync_playwright() as p:
             fieldnames=fieldnames
         )
 
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
 
         writer.writerows(
             leads
@@ -1150,7 +1279,7 @@ with sync_playwright() as p:
     print("=" * 60)
 
     print(
-        f"{len(leads)} Leads gespeichert."
+        f"{len(leads)} neue Leads angehaengt."
     )
 
     print(
