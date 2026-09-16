@@ -96,14 +96,25 @@ Der Scraper muss umgebaut werden, konkret zwei Probleme:
    `SEARCH`/`CATEGORY`/`CITY` sind weiterhin hart kodiert — das ist Punkt 2 unten und
    noch offen. Lokal noch nicht mit echtem Playwright-Lauf getestet (nur
    `py_compile`-Syntaxcheck), da Playwright in `.venv` fehlt (siehe Tech-Stack).
-2. **Keine Geo-/Branchen-Steuerung.** `CATEGORY`/`CITY`/`SEARCH` sind aktuell fix auf
-   `"Elektriker"` / `"Hamburg"` gesetzt. Gewünscht: Handwerksbetriebe im Umkreis von
-   ca. 25 km um **Alfeld (Leine), Hildesheim und Hannover**. Google Maps' Textsuche
-   kennt keinen echten Radius-Parameter — mögliche Ansätze, die es abzuwägen gilt:
-   mehrere Suchbegriffe pro Ort/Branche durchlaufen (z.B. Liste von Handwerker-Branchen
-   × Liste von Städten/Orten im 25-km-Radius), oder über Koordinaten/Zoom-Level in der
-   Maps-URL (`@lat,lng,zoom`) eine Umkreissuche annähern. Das ist eine offene
-   Design-Entscheidung — bitte mit John klären, bevor viel Code dafür geschrieben wird.
+2. **[BEHOBEN, 2026-09-15] Keine Geo-/Branchen-Steuerung.** Mit John geklärt: Ansatz
+   ist eine Liste von Suchbegriffen (Branche × Ort), keine Koordinaten/Zoom-Annäherung.
+   `scraper.py` hat jetzt `SEARCH_TRADES` (12 Handwerksbranchen: Elektriker, SHK,
+   Dachdecker, Maler/Lackierer, Tischler/Schreiner, Zimmerer, Fliesenleger,
+   Garten-/Landschaftsbau, Maurer/Betonbauer, Trockenbauer, Metallbauer/Schlosser,
+   Glaser) und `SEARCH_LOCATIONS` (40 Orte: alle Gemeinden des Landkreises Hildesheim
+   + alle Gemeinden der Region Hannover — Näherung an den 25-km-Radius um Alfeld,
+   Hildesheim und Hannover, nicht einzeln geodätisch nachgemessen). Das
+   Hauptprogramm läuft die 480 Kombinationen (`SEARCH_TRADES` × `SEARCH_LOCATIONS`)
+   der Reihe nach durch, bis `TARGET_NEW_LEADS` (100) neue Leads in einem Durchlauf
+   gefunden wurden oder `MAX_CONSECUTIVE_EMPTY` (15) Kombinationen in Folge nichts
+   Neues brachten. `MAX_LEADS_PER_SEARCH` (10) deckelt jede einzelne Kombination.
+   Der zuletzt erreichte Kombinationsindex wird in `scraper_state.json` gemerkt,
+   damit der nächste Lauf dort weitermacht statt immer bei Kombination 1 neu
+   anzufangen (bereits ausgeschöpfte Kombinationen würden sonst bei jedem Lauf
+   erneut erfolglos durchscrollt). `CATEGORY`/`CITY`/`SEARCH` sind jetzt Platzhalter,
+   die `run_one_search()` pro Kombination neu setzt, statt fixer Konstanten.
+   Ort-Liste ist eine grobe Näherung aus offiziellen Gemeindelisten (Landkreis
+   Hildesheim + Region Hannover) — bei Bedarf einzelne Orte ergänzen/entfernen.
 
 ## Code-Stil (aktuell im Repo)
 

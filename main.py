@@ -5,6 +5,10 @@ main.py - Startet die komplette Lead-Pipeline automatisch, in der Reihenfolge:
   2. website_analyzer.py  bewertet die Websites in leads_clean.csv
   3. analyze_leads.py     Scoring (deterministisch) + Ollama-Verkaufsargumente
                            -> leads_analyzed.csv
+  4. (optional, --with-crm-upload) crm_export.py + crm_upload.py
+                           -> exportiert nur neue Leads (siehe crm_export.py /
+                           crm_upload.py State-Tracking) und schickt sie an
+                           Maurices Lead-Management-System.
 
 Jeder Schritt laeuft als eigener Python-Prozess (genau wie bisher beim
 manuellen Ausfuehren), nicht als Import. Das ist bewusst so, weil
@@ -18,8 +22,14 @@ nachfolgenden Schritte nicht mit kaputten oder leeren Daten weiterlaufen.
 
 Aufruf:
     python main.py
+    python main.py --with-crm-upload --conflict-strategy SKIP
+        (braucht zusaetzlich CRM_USER/CRM_PASSWORD als Umgebungsvariablen,
+        siehe crm_upload.py; ohne diese wird Schritt 4 uebersprungen statt
+        die Pipeline abzubrechen)
 """
 
+import argparse
+import os
 import subprocess
 import sys
 import urllib.error
@@ -29,9 +39,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 PIPELINE = [
-    ("Scraper (Google Maps)", "scraper.py"),
-    ("Website-Analyse", "website_analyzer.py"),
-    ("Lead-Analyse (Scoring + Ollama)", "analyze_leads.py"),
+    ("Scraper (Google Maps)", "scraper.py", []),
+    ("Website-Analyse", "website_analyzer.py", []),
+    ("Lead-Analyse (Scoring + Ollama)", "analyze_leads.py", []),
 ]
 
 OLLAMA_CHECK_URL = "http://localhost:11434"
@@ -49,7 +59,7 @@ def check_ollama_running():
         return False
 
 
-def run_step(title, script_name):
+def run_step(title, script_name, extra_args):
     script_path = BASE_DIR / script_name
 
     print()
@@ -58,7 +68,7 @@ def run_step(title, script_name):
     print("=" * 60)
 
     result = subprocess.run(
-        [sys.executable, str(script_path)],
+        [sys.executable, str(script_path), *extra_args],
         cwd=BASE_DIR,
     )
 
@@ -70,6 +80,20 @@ def run_step(title, script_name):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--with-crm-upload",
+        action="store_true",
+        help="Nach der Lead-Analyse zusaetzlich crm_export.py + crm_upload.py ausfuehren (braucht CRM_USER/CRM_PASSWORD als Env-Vars)",
+    )
+    parser.add_argument(
+        "--conflict-strategy",
+        choices=["SKIP", "UPDATE", "FAIL"],
+        default="SKIP",
+        help="Nur relevant mit --with-crm-upload. Default SKIP.",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("LEAD-PIPELINE START")
     print("=" * 60)
@@ -86,14 +110,45 @@ def main():
             print("Abgebrochen. Bitte zuerst Ollama starten ('ollama serve') und main.py erneut ausfuehren.")
             sys.exit(1)
 
-    for title, script_name in PIPELINE:
-        run_step(title, script_name)
+    for title, script_name, extra_args in PIPELINE:
+        run_step(title, script_name, extra_args)
 
     print()
     print("=" * 60)
-    print("PIPELINE ABGESCHLOSSEN")
+    print("PIPELINE (SCHRITTE 1-3) ABGESCHLOSSEN")
     print("=" * 60)
     print("Ergebnis: leads_analyzed.csv")
+
+    if not args.with_crm_upload:
+        return
+
+    print()
+    print("=" * 60)
+    print("SCHRITT 4: CRM-EXPORT + UPLOAD")
+    print("=" * 60)
+
+    crm_user = os.environ.get("CRM_USER")
+    crm_password = os.environ.get("CRM_PASSWORD")
+
+    if not crm_user or not crm_password:
+        print()
+        print("CRM_USER/CRM_PASSWORD nicht gesetzt - Schritt 4 wird uebersprungen.")
+        print("(leads_analyzed.csv aus den Schritten 1-3 ist trotzdem vollstaendig fertig.)")
+        print("Zum Nachholen: CRM_USER=... CRM_PASSWORD=... python crm_export.py && python crm_upload.py crm_import.csv")
+        return
+
+    run_step("CRM-Export (nur neue Leads)", "crm_export.py", [])
+
+    run_step(
+        "CRM-Upload",
+        "crm_upload.py",
+        ["crm_import.csv", "--conflict-strategy", args.conflict_strategy],
+    )
+
+    print()
+    print("=" * 60)
+    print("PIPELINE INKL. CRM-UPLOAD ABGESCHLOSSEN")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

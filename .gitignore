@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .DS_Store
 .idea/
+# Lokale Backups / Claude-Session-Outputs, nicht Teil des Projekts
+Claude outputs/
+*.bak_pre_directory_cleanup

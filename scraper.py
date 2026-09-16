@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import re
 from datetime import datetime
@@ -13,14 +14,61 @@ from playwright.sync_api import sync_playwright
 # EINSTELLUNGEN
 # ============================================================
 
-SEARCH = "Elektriker Hamburg"
-CATEGORY = "Elektriker"
-CITY = "Hamburg"
+# Mehrere Suchbegriffe (Branche x Ort) statt einer einzelnen Stadt/Branche.
+# Wird in HAUPTPROGRAMM unten der Reihe nach durchlaufen; SEARCH/CATEGORY/CITY
+# werden pro Kombination neu gesetzt (siehe run_one_search()).
+SEARCH_TRADES = [
+    "Elektriker",
+    "Sanitaer Heizung Klima",
+    "Dachdecker",
+    "Maler Lackierer",
+    "Tischler Schreiner",
+    "Zimmerer",
+    "Fliesenleger",
+    "Garten- und Landschaftsbau",
+    "Maurer Betonbauer",
+    "Trockenbauer",
+    "Metallbauer Schlosser",
+    "Glaser",
+]
+
+# 25-km-Radius um Alfeld (Leine), Hildesheim und Hannover, angenaehert ueber
+# Landkreis Hildesheim + Region Hannover (siehe scraper-crm-integration-plan.md
+# im Projekt bzw. CLAUDE.md). Grobe Naeherung aus offiziellen Gemeindelisten,
+# nicht einzeln geodaetisch nachgemessen - bei Bedarf Orte ergaenzen/entfernen.
+SEARCH_LOCATIONS = [
+    # Landkreis Hildesheim
+    "Alfeld (Leine)", "Algermissen", "Bad Salzdetfurth", "Bockenem",
+    "Diekholzen", "Elze", "Freden (Leine)", "Giesen", "Harsum", "Hildesheim",
+    "Holle", "Lamspringe", "Nordstemmen", "Sarstedt", "Schellerten",
+    "Sibbesse", "Soehlde", "Duingen", "Eime", "Gronau (Leine)",
+    # Region Hannover
+    "Barsinghausen", "Burgdorf", "Burgwedel", "Garbsen", "Gehrden",
+    "Hannover", "Hemmingen", "Isernhagen", "Laatzen", "Langenhagen",
+    "Lehrte", "Neustadt am Ruebenberge", "Pattensen", "Ronnenberg", "Seelze",
+    "Sehnde", "Springe", "Uetze", "Wedemark", "Wennigsen (Deister)",
+    "Wunstorf",
+]
+
+CATEGORY = ""   # wird pro Suchlauf neu gesetzt, siehe HAUPTPROGRAMM
+CITY = ""       # wird pro Suchlauf neu gesetzt
+SEARCH = ""     # wird pro Suchlauf neu gesetzt
 COUNTRY = "Deutschland"
 
-MAX_LEADS = 10
+# Ziel: so viele NEUE Leads insgesamt pro Pipeline-Durchlauf (ueber alle
+# Branche x Ort Kombinationen hinweg), nicht pro einzelner Suche.
+TARGET_NEW_LEADS = 100
+
+# Obergrenze neuer Leads PRO Suchkombination, damit keine einzelne Kombination
+# den ganzen Lauf dominiert und jede Kombination ungefaehr gleich viel Zeit kostet.
+MAX_LEADS_PER_SEARCH = 10
+
+# Nach wie vielen komplett erfolglosen Kombinationen (0 neue Leads) in Folge
+# wird der Lauf abgebrochen, statt die ganze Liste erfolglos durchzuscrollen.
+MAX_CONSECUTIVE_EMPTY = 15
 
 OUTPUT_FILE = "leads_clean.csv"
+STATE_FILE = "scraper_state.json"
 
 # Dedup / Scroll-Einstellungen
 MAX_SCROLL_ATTEMPTS = 40      # Sicherheitslimit, damit die Suche nicht endlos scrollt
@@ -190,6 +238,41 @@ def detect_social_type(url):
     return ""
 
 
+# Branchenverzeichnisse, die Google Maps manchmal statt einer echten
+# Firmen-Website als "Website" verlinkt. Solche Links zaehlen NICHT als
+# eigene Website (has_website bleibt false) und werden nicht fuer die
+# E-Mail-Suche verwendet - sonst landet dort oft eine generische
+# Verzeichnis-Kontakt-E-Mail, die sich mehrere Firmen teilen und die als
+# CRM-Dedupe-Key (E-Mail) faelschlich Leads zusammenfuehren wuerde.
+DIRECTORY_DOMAINS = {
+    "elektrikerportal.com",
+    "11880.com",
+    "gelbeseiten.de",
+    "dasoertliche.de",
+    "meinestadt.de",
+    "firmenwissen.de",
+    "cylex.de",
+    "cylex-deutschland.de",
+    "branchenbuch24.de",
+    "wlw.de",
+    "kompass.com",
+    "yelp.de",
+    "goyellow.de",
+    "stadtbranchenbuch.com",
+    "firmenverzeichnis.org",
+    "unternehmensregister.de",
+}
+
+
+def is_directory_domain(url):
+    domain = get_domain(url)
+
+    return any(
+        domain == directory_domain or domain.endswith("." + directory_domain)
+        for directory_domain in DIRECTORY_DOMAINS
+    )
+
+
 # ============================================================
 # WEBSITE AUS GOOGLE MAPS
 # ============================================================
@@ -260,6 +343,9 @@ def extract_urls(page, company_name):
             if social_type in result and not result[social_type]:
                 result[social_type] = url
 
+            continue
+
+        if is_directory_domain(url):
             continue
 
         if not result["website"]:
@@ -936,6 +1022,204 @@ def extract_lead(
 
 
 # ============================================================
+# EINZELNE SUCHE (EINE BRANCHE x ORT KOMBINATION) AUSFUEHREN
+# ============================================================
+
+def run_one_search(page, search_term, category, city, known_urls, known_keys, max_new, fieldnames):
+    """
+    Fuehrt eine einzelne Google-Maps-Suche aus (Suchfeld fuellen, scrollen,
+    Firmen oeffnen und extrahieren) und haengt neu gefundene, noch unbekannte
+    Leads sofort an OUTPUT_FILE an.
+
+    known_urls / known_keys werden in-place erweitert, damit spaetere
+    Kombinationen im selben Lauf dieselben Firmen nicht erneut sammeln.
+
+    Erwartet, dass 'page' bereits auf https://www.google.com/maps steht und
+    der Google-Consent bereits bestaetigt wurde (siehe HAUPTPROGRAMM unten).
+
+    Gibt die Anzahl neu geschriebener Leads zurueck.
+    """
+
+    global CATEGORY, CITY, SEARCH
+    CATEGORY = category
+    CITY = city
+    SEARCH = search_term
+
+    search_box = page.locator('input[name="q"]')
+
+    search_box.wait_for(state="visible", timeout=20000)
+
+    search_box.fill("")
+    search_box.fill(search_term)
+    search_box.press("Enter")
+
+    print()
+    print(f"Suche: {search_term}")
+
+    page.wait_for_timeout(7000)
+
+    print()
+    print("Suche nach Firmen (scrollt bei Bedarf, ueberspringt bereits bekannte Leads)...")
+
+    companies = []
+    seen_urls = set()
+
+    scroll_attempts = 0
+    stagnant_rounds = 0
+    last_link_count = 0
+
+    while len(companies) < max_new and scroll_attempts <= MAX_SCROLL_ATTEMPTS:
+
+        links = page.locator('a[href*="/maps/place/"]')
+        link_count = links.count()
+
+        for i in range(link_count):
+            try:
+                link = links.nth(i)
+                name = clean_text(link.inner_text())
+                href = link.get_attribute("href")
+
+                if not name or not href:
+                    continue
+
+                href = absolutize_maps_url(href)
+
+                if href in seen_urls:
+                    continue
+
+                seen_urls.add(href)
+
+                if href in known_urls:
+                    continue
+
+                companies.append({"name": name, "url": href})
+
+                if len(companies) >= max_new:
+                    break
+
+            except Exception:
+                continue
+
+        if len(companies) >= max_new:
+            break
+
+        if link_count == last_link_count:
+            stagnant_rounds += 1
+
+            if stagnant_rounds >= STAGNANT_ROUNDS_LIMIT:
+                print("Keine neuen Ergebnisse mehr beim Scrollen - Ende der Liste erreicht.")
+                break
+        else:
+            stagnant_rounds = 0
+
+        last_link_count = link_count
+
+        feed = page.locator('div[role="feed"]')
+
+        try:
+            if feed.count() > 0:
+                feed.first.evaluate("el => el.scrollBy(0, el.scrollHeight)")
+            else:
+                page.mouse.wheel(0, 2000)
+        except Exception:
+            page.mouse.wheel(0, 2000)
+
+        page.wait_for_timeout(SCROLL_WAIT_MS)
+
+        scroll_attempts += 1
+
+    print()
+    print(f"{len(companies)} neue Firmen gefunden (bereits bekannte uebersprungen):")
+
+    for index, company in enumerate(companies, start=1):
+        print(f"{index}. {company['name']}")
+
+    leads = []
+
+    for index, company in enumerate(companies, start=1):
+        print()
+        print("=" * 60)
+        print(f"LEAD {index}/{len(companies)}")
+        print(company["name"])
+        print("=" * 60)
+
+        try:
+            maps_url = company["url"]
+
+            if maps_url.startswith("/"):
+                maps_url = "https://www.google.com" + maps_url
+
+            page.goto(maps_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
+
+            lead = extract_lead(page, company["name"], maps_url)
+
+            if lead:
+                leads.append(lead)
+
+        except Exception as error:
+            print(f"FEHLER: {error}")
+
+    unique_leads = []
+
+    for lead in leads:
+        key = normalize_key(lead["company_name"], lead["address"])
+
+        if key and key in known_keys:
+            print(f"Ueberspringe Duplikat (Name+Adresse bereits bekannt): {lead['company_name']}")
+            continue
+
+        if key:
+            known_keys.add(key)
+
+        if lead["maps_url"]:
+            known_urls.add(lead["maps_url"])
+
+        unique_leads.append(lead)
+
+    file_exists = (
+        os.path.exists(OUTPUT_FILE)
+        and os.path.getsize(OUTPUT_FILE) > 0
+    )
+
+    with open(OUTPUT_FILE, "a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerows(unique_leads)
+
+    print()
+    print(f"{len(unique_leads)} neue Leads fuer '{search_term}' angehaengt.")
+
+    return len(unique_leads)
+
+
+# ============================================================
+# ZUSTAND (WELCHE KOMBINATION ZULETZT DRAN WAR)
+# ============================================================
+
+def load_state(filepath):
+    if not os.path.exists(filepath):
+        return {"combo_index": 0}
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {"combo_index": 0}
+
+
+def save_state(filepath, state):
+    try:
+        with open(filepath, "w", encoding="utf-8") as file:
+            json.dump(state, file)
+    except Exception as error:
+        print(f"WARNUNG: Konnte {filepath} nicht schreiben: {error}")
+
+
+# ============================================================
 # HAUPTPROGRAMM
 # ============================================================
 
@@ -946,6 +1230,48 @@ with sync_playwright() as p:
     known_urls, known_keys = load_known_leads(OUTPUT_FILE)
 
     print(f"{len(known_urls)} bereits bekannte Leads gefunden (werden uebersprungen).")
+
+    combos = [
+        (trade, ort)
+        for trade in SEARCH_TRADES
+        for ort in SEARCH_LOCATIONS
+    ]
+
+    state = load_state(STATE_FILE)
+    start_index = state.get("combo_index", 0) % len(combos)
+
+    fieldnames = [
+        "company_name",
+        "category",
+        "address",
+        "city",
+        "postal_code",
+        "country",
+        "phone",
+
+        "email",
+
+        "website",
+
+        "instagram",
+        "facebook",
+        "tiktok",
+        "youtube",
+        "linkedin",
+
+        "google_rating",
+        "review_count",
+
+        "has_website",
+        "website_quality",
+        "lead_score",
+        "priority",
+
+        "source",
+        "scraped_at",
+
+        "maps_url",
+    ]
 
     browser = p.chromium.launch(
         headless=False
@@ -991,295 +1317,76 @@ with sync_playwright() as p:
         )
 
     # ========================================================
-    # SUCHE
+    # KOMBINATIONEN DURCHLAUFEN, BIS TARGET_NEW_LEADS ERREICHT
     # ========================================================
 
-    search_box = page.locator(
-        'input[name="q"]'
-    )
-
-    search_box.wait_for(
-        state="visible",
-        timeout=20000
-    )
-
-    search_box.fill(
-        SEARCH
-    )
-
-    search_box.press(
-        "Enter"
-    )
+    total_new = 0
+    consecutive_empty = 0
+    combos_tried = 0
 
     print()
-    print(
-        f"Suche: {SEARCH}"
-    )
+    print(f"Ziel: {TARGET_NEW_LEADS} neue Leads ueber bis zu {len(combos)} Branche x Ort Kombinationen.")
+    print(f"Start bei Kombination #{start_index + 1} (gemerkt aus vorherigem Lauf, {STATE_FILE}).")
 
-    page.wait_for_timeout(
-        7000
-    )
+    for offset in range(len(combos)):
 
-    # ========================================================
-    # FIRMEN + MAPS URLS SAMMELN
-    # ========================================================
-
-    print()
-    print("Suche nach Firmen (scrollt bei Bedarf, ueberspringt bereits bekannte Leads)...")
-
-    companies = []
-
-    seen_urls = set()
-
-    scroll_attempts = 0
-    stagnant_rounds = 0
-    last_link_count = 0
-
-    while len(companies) < MAX_LEADS and scroll_attempts <= MAX_SCROLL_ATTEMPTS:
-
-        links = page.locator(
-            'a[href*="/maps/place/"]'
-        )
-
-        link_count = links.count()
-
-        for i in range(link_count):
-
-            try:
-
-                link = links.nth(i)
-
-                name = clean_text(
-                    link.inner_text()
-                )
-
-                href = link.get_attribute(
-                    "href"
-                )
-
-                if not name or not href:
-                    continue
-
-                href = absolutize_maps_url(href)
-
-                if href in seen_urls:
-                    continue
-
-                seen_urls.add(href)
-
-                if href in known_urls:
-                    continue
-
-                companies.append({
-                    "name": name,
-                    "url": href
-                })
-
-                if len(companies) >= MAX_LEADS:
-                    break
-
-            except Exception:
-                continue
-
-        if len(companies) >= MAX_LEADS:
+        if total_new >= TARGET_NEW_LEADS:
+            print()
+            print(f"Ziel von {TARGET_NEW_LEADS} neuen Leads erreicht.")
             break
 
-        if link_count == last_link_count:
-            stagnant_rounds += 1
+        if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
+            print()
+            print(f"{MAX_CONSECUTIVE_EMPTY} Kombinationen in Folge ohne neue Leads - Lauf wird beendet.")
+            break
 
-            if stagnant_rounds >= STAGNANT_ROUNDS_LIMIT:
-                print("Keine neuen Ergebnisse mehr beim Scrollen - Ende der Liste erreicht.")
-                break
-
-        else:
-            stagnant_rounds = 0
-
-        last_link_count = link_count
-
-        feed = page.locator('div[role="feed"]')
-
-        try:
-            if feed.count() > 0:
-                feed.first.evaluate("el => el.scrollBy(0, el.scrollHeight)")
-            else:
-                page.mouse.wheel(0, 2000)
-        except Exception:
-            page.mouse.wheel(0, 2000)
-
-        page.wait_for_timeout(SCROLL_WAIT_MS)
-
-        scroll_attempts += 1
-
-    print()
-    print(
-        f"{len(companies)} neue Firmen gefunden (bereits bekannte uebersprungen):"
-    )
-
-    for index, company in enumerate(
-        companies,
-        start=1
-    ):
-
-        print(
-            f"{index}. {company['name']}"
-        )
-
-    # ========================================================
-    # LEADS EXTRAHIEREN
-    # ========================================================
-
-    leads = []
-
-    for index, company in enumerate(
-        companies,
-        start=1
-    ):
+        combo_index = (start_index + offset) % len(combos)
+        trade, ort = combos[combo_index]
+        search_term = f"{trade} {ort}"
 
         print()
-        print("=" * 60)
+        print("#" * 60)
+        print(f"KOMBINATION {offset + 1}/{len(combos)} (Index {combo_index}): {search_term}")
+        print("#" * 60)
 
-        print(
-            f"LEAD {index}/{len(companies)}"
-        )
-
-        print(
-            company["name"]
-        )
-
-        print("=" * 60)
+        remaining = TARGET_NEW_LEADS - total_new
+        max_new_this_search = min(MAX_LEADS_PER_SEARCH, remaining)
 
         try:
-
-            maps_url = company[
-                "url"
-            ]
-
-            if maps_url.startswith(
-                "/"
-            ):
-
-                maps_url = (
-                    "https://www.google.com"
-                    + maps_url
-                )
-
-            page.goto(
-                maps_url,
-                wait_until="domcontentloaded",
-                timeout=30000
-            )
-
-            page.wait_for_timeout(
-                3000
-            )
-
-            lead = extract_lead(
+            new_count = run_one_search(
                 page,
-                company["name"],
-                maps_url
+                search_term,
+                trade,
+                ort,
+                known_urls,
+                known_keys,
+                max_new_this_search,
+                fieldnames,
             )
-
-            if lead:
-                leads.append(
-                    lead
-                )
-
         except Exception as error:
+            print(f"FEHLER bei Kombination '{search_term}': {error}")
+            new_count = 0
 
-            print(
-                f"FEHLER: {error}"
-            )
+        total_new += new_count
+        combos_tried += 1
 
-    # ========================================================
-    # CSV
-    # ========================================================
+        if new_count == 0:
+            consecutive_empty += 1
+        else:
+            consecutive_empty = 0
 
-    fieldnames = [
-        "company_name",
-        "category",
-        "address",
-        "city",
-        "postal_code",
-        "country",
-        "phone",
-        "email",
-
-        "website",
-
-        "instagram",
-        "facebook",
-        "tiktok",
-        "youtube",
-        "linkedin",
-
-        "google_rating",
-        "review_count",
-
-        "has_website",
-        "website_quality",
-        "lead_score",
-        "priority",
-
-        "source",
-        "scraped_at",
-
-        "maps_url",
-    ]
-
-    seen_keys_this_run = set()
-    unique_leads = []
-
-    for lead in leads:
-
-        key = normalize_key(
-            lead["company_name"],
-            lead["address"]
-        )
-
-        if key and (key in known_keys or key in seen_keys_this_run):
-            print(f"Ueberspringe Duplikat (Name+Adresse bereits bekannt): {lead['company_name']}")
-            continue
-
-        if key:
-            seen_keys_this_run.add(key)
-
-        unique_leads.append(lead)
-
-    leads = unique_leads
-
-    file_exists = (
-        os.path.exists(OUTPUT_FILE)
-        and os.path.getsize(OUTPUT_FILE) > 0
-    )
-
-    with open(
-        OUTPUT_FILE,
-        "a",
-        newline="",
-        encoding="utf-8"
-    ) as file:
-
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames
-        )
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerows(
-            leads
-        )
+        # Fortschritt sofort merken, damit der naechste Lauf hier weitermacht,
+        # statt immer wieder von vorne (bereits ausgeschoepfte Kombinationen).
+        next_index = (combo_index + 1) % len(combos)
+        save_state(STATE_FILE, {"combo_index": next_index})
 
     print()
     print("=" * 60)
-    print(
-        "SCRAPING ABGESCHLOSSEN"
-    )
+    print("SCRAPING ABGESCHLOSSEN")
     print("=" * 60)
 
     print(
-        f"{len(leads)} neue Leads angehaengt."
+        f"{total_new} neue Leads insgesamt angehaengt (aus {combos_tried} Kombination(en))."
     )
 
     print(
